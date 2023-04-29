@@ -1,10 +1,7 @@
-use std::io::Write;
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
+// use ulid::Ulid;
 
-use distributed_systems_challenges::{Body, Init, Message, Node, main_loop};
-
+use distributed_systems_challenges::{main_loop, Init, Message, Node, Writer};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
@@ -21,32 +18,31 @@ struct UniqueIDsNode {
 
 impl UniqueIDsNode {
     fn generate_id(&mut self) -> String {
-        // format!("{}-{}", self.node_id, self.msg_id)
-        Ulid::new().to_string()
+        format!("{}-{}", self.node_id, self.msg_id)
+        // Ulid::new().to_string()
     }
 }
 
 impl Node<GeneratePayload> for UniqueIDsNode {
-    fn step<T: Write>(&mut self, input: Message<GeneratePayload>, mut output_writer: T) -> anyhow::Result<()> {
-        let output = match input.body.payload {
+    fn step<T: Writer>(
+        &mut self,
+        input: Message<GeneratePayload>,
+        output_writer: &T,
+    ) -> anyhow::Result<()> {
+        let mut reply = input.into_reply(Some(self.msg_id));
+        let output = match reply.body.payload {
             GeneratePayload::Generate => {
-                Some(Message {
-                    src: self.node_id.clone(),
-                    dst: input.src,
-                    body: Body {
-                        id: Some(self.msg_id),
-                        in_reply_to: input.body.id,
-                        payload: GeneratePayload::GenerateOk { id: self.generate_id() },
-                    },
-                })
+                reply.body.payload = GeneratePayload::GenerateOk {
+                    id: self.generate_id(),
+                };
+                Some(reply)
             }
-            _ => { None }
+            _ => None,
         };
-        if output.is_some() {
+
+        if let Some(output) = output {
             self.msg_id += 1;
-            let output_bytes = serde_json::to_string(&output).context("failed to serialize output")?.into_bytes();
-            output_writer.write_all(&output_bytes)?;
-            output_writer.write_all(b"\n").context("failed to write newline")?;
+            output_writer.write_message(output)?;
         }
 
         Ok(())
