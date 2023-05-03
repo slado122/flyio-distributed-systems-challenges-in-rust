@@ -31,7 +31,7 @@ impl Node<EchoPayload> for EchoNode {
                 reply.body.payload = EchoPayload::EchoOk { echo };
                 Some(reply)
             }
-            _ => None,
+            EchoPayload::EchoOk { .. } => None,
         };
         if let Some(output) = output {
             self.msg_id += 1;

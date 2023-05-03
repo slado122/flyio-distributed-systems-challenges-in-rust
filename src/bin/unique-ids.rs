@@ -42,7 +42,7 @@ impl Node<GeneratePayload> for UniqueIDsNode {
                 };
                 Some(reply)
             }
-            _ => None,
+            GeneratePayload::GenerateOk { .. } => None,
         };
 
         if let Some(output) = output {
