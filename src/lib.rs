@@ -2,6 +2,8 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
+use std::sync::mpsc;
+use std::thread;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message<Payload> {
@@ -9,6 +11,11 @@ pub struct Message<Payload> {
     #[serde(rename = "dest")]
     pub dst: String,
     pub body: Body<Payload>,
+}
+
+pub enum Event<Payload, InjectedPayload = ()> {
+    Message(Message<Payload>),
+    Injected(InjectedPayload),
 }
 
 impl<Payload> Message<Payload> {
@@ -49,10 +56,13 @@ pub struct Init {
     pub node_ids: Vec<String>,
 }
 
-pub trait Node<Payload> {
-    fn step<T: Writer>(&mut self, input: Message<Payload>, output_writer: &T)
-        -> anyhow::Result<()>;
-    fn from_init(init: Init) -> Self;
+pub trait Node<Payload, InjectedPayload = ()> {
+    fn step(
+        &mut self,
+        input: Event<Payload, InjectedPayload>,
+        output_writer: &impl Writer,
+    ) -> anyhow::Result<()>;
+    fn from_init(init: Init, sender: mpsc::Sender<Event<Payload, InjectedPayload>>) -> Self;
 }
 
 pub trait Writer {
@@ -73,10 +83,11 @@ impl Writer for StdoutWriter {
     }
 }
 
-pub fn main_loop<N, Payload>() -> anyhow::Result<()>
+pub fn main_loop<N, Payload, InjectedPayload>() -> anyhow::Result<()>
 where
-    Payload: DeserializeOwned + 'static,
-    N: Node<Payload>,
+    Payload: DeserializeOwned + Send + 'static,
+    InjectedPayload: Send + 'static,
+    N: Node<Payload, InjectedPayload>,
 {
     let stdin = std::io::stdin();
     let writer = StdoutWriter;
@@ -99,13 +110,27 @@ where
         .write_message(reply)
         .context("failed to write init reply")?;
 
-    let mut node: N = Node::from_init(init);
+    let (sender, receiver) = mpsc::channel();
+    let mut node: N = Node::from_init(init, sender.clone());
 
-    let inputs =
-        serde_json::Deserializer::from_reader(stdin.lock()).into_iter::<Message<Payload>>();
-    for input in inputs {
-        let input = input.context("failed to deserialize input")?;
-        node.step(input, &writer)?;
+    let thread_sender = sender.clone();
+    thread::spawn(move || {
+        let inputs =
+            serde_json::Deserializer::from_reader(stdin.lock()).into_iter::<Message<Payload>>();
+        for input in inputs {
+            if let Ok(input) = input {
+                thread_sender
+                    .send(Event::Message(input))
+                    .expect("failed to send message to main thread");
+            } else {
+                panic!("failed to deserialize input");
+            }
+        }
+    });
+
+    for event in receiver {
+        node.step(event, &writer)?;
     }
+
     Ok(())
 }

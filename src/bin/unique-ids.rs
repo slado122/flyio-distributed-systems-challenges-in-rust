@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::sync::mpsc;
 // use ulid::Ulid;
 
-use distributed_systems_challenges::{main_loop, Init, Message, Node, Writer};
+use distributed_systems_challenges::{main_loop, Event, Init, Node, Writer};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
@@ -24,12 +25,16 @@ impl UniqueIDsNode {
 }
 
 impl Node<GeneratePayload> for UniqueIDsNode {
-    fn step<T: Writer>(
+    fn step(
         &mut self,
-        input: Message<GeneratePayload>,
-        output_writer: &T,
+        input: Event<GeneratePayload>,
+        output_writer: &impl Writer,
     ) -> anyhow::Result<()> {
-        let mut reply = input.into_reply(Some(self.msg_id));
+        let mut reply = if let Event::Message(input) = input {
+            input.into_reply(Some(self.msg_id))
+        } else {
+            panic!("received injected message when not expecting one");
+        };
         let output = match reply.body.payload {
             GeneratePayload::Generate => {
                 reply.body.payload = GeneratePayload::GenerateOk {
@@ -47,7 +52,7 @@ impl Node<GeneratePayload> for UniqueIDsNode {
 
         Ok(())
     }
-    fn from_init(init: Init) -> Self {
+    fn from_init(init: Init, _sender: mpsc::Sender<Event<GeneratePayload>>) -> Self {
         UniqueIDsNode {
             node_id: init.node_id,
             msg_id: 0,
@@ -56,5 +61,5 @@ impl Node<GeneratePayload> for UniqueIDsNode {
 }
 
 fn main() {
-    main_loop::<UniqueIDsNode, GeneratePayload>().expect("failed to run main loop");
+    main_loop::<UniqueIDsNode, GeneratePayload, _>().expect("failed to run main loop");
 }
