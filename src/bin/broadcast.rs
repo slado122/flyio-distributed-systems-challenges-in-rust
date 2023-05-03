@@ -51,6 +51,19 @@ impl BroadcastNode {
 }
 
 impl BroadcastNode {
+    fn spawn_gossip_thread(
+        sender: mpsc::Sender<Event<BroadcastPayload, BroadcastInjectedPayload>>,
+    ) {
+        thread::spawn(move || loop {
+            thread::sleep(std::time::Duration::from_millis(200));
+            sender
+                .send(Event::Injected(BroadcastInjectedPayload::Gossip))
+                .unwrap();
+        });
+    }
+}
+
+impl BroadcastNode {
     fn handle_broadcast(
         &mut self,
         message: usize,
@@ -204,12 +217,7 @@ impl Node<BroadcastPayload, BroadcastInjectedPayload> for BroadcastNode {
         init: Init,
         sender: mpsc::Sender<Event<BroadcastPayload, BroadcastInjectedPayload>>,
     ) -> Self {
-        thread::spawn(move || loop {
-            thread::sleep(std::time::Duration::from_millis(200));
-            sender
-                .send(Event::Injected(BroadcastInjectedPayload::Gossip))
-                .unwrap();
-        });
+        BroadcastNode::spawn_gossip_thread(sender);
         BroadcastNode {
             node_id: init.node_id,
             msg_id: RefCell::new(0),
