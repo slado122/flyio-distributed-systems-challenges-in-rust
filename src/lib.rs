@@ -83,14 +83,8 @@ impl Writer for StdoutWriter {
     }
 }
 
-pub fn main_loop<N, Payload, InjectedPayload>() -> anyhow::Result<()>
-where
-    Payload: DeserializeOwned + Send + 'static,
-    InjectedPayload: Send + 'static,
-    N: Node<Payload, InjectedPayload>,
-{
+fn extract_init_message() -> anyhow::Result<(Message<InitPayload>, Init)> {
     let stdin = std::io::stdin();
-    let writer = StdoutWriter;
 
     let init_message = stdin
         .lock()
@@ -103,23 +97,34 @@ where
     let InitPayload::Init(init) = init_message.body.payload.clone() else {
         panic!("first message should be init");
     };
+    Ok((init_message, init))
+}
 
+fn reply_to_init_message(
+    init_message: Message<InitPayload>,
+    writer: &impl Writer,
+) -> anyhow::Result<()> {
     let mut reply = init_message.into_reply(None);
     reply.body.payload = InitPayload::InitOk;
     writer
         .write_message(reply)
         .context("failed to write init reply")?;
+    Ok(())
+}
 
-    let (sender, receiver) = mpsc::channel();
-    let mut node: N = Node::from_init(init, sender.clone());
-
-    let thread_sender = sender.clone();
+fn spawn_stdin_thread<Payload, InjectedPayload>(
+    sender: mpsc::Sender<Event<Payload, InjectedPayload>>,
+) where
+    Payload: DeserializeOwned + Send + 'static,
+    InjectedPayload: Send + 'static,
+{
+    let stdin = std::io::stdin();
     thread::spawn(move || {
         let inputs =
             serde_json::Deserializer::from_reader(stdin.lock()).into_iter::<Message<Payload>>();
         for input in inputs {
             if let Ok(input) = input {
-                thread_sender
+                sender
                     .send(Event::Message(input))
                     .expect("failed to send message to main thread");
             } else {
@@ -127,7 +132,24 @@ where
             }
         }
     });
+}
 
+pub fn main_loop<N, Payload, InjectedPayload>() -> anyhow::Result<()>
+where
+    Payload: DeserializeOwned + Send + 'static,
+    InjectedPayload: Send + 'static,
+    N: Node<Payload, InjectedPayload>,
+{
+    let writer = StdoutWriter;
+
+    let (init_message, init) = extract_init_message()?;
+    reply_to_init_message(init_message, &writer)?;
+
+    let (sender, receiver) = mpsc::channel();
+
+    spawn_stdin_thread(sender.clone());
+
+    let mut node: N = Node::from_init(init, sender.clone());
     for event in receiver {
         node.step(event, &writer)?;
     }
