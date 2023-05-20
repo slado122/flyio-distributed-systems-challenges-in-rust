@@ -1,3 +1,5 @@
+use rand;
+use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -34,6 +36,7 @@ enum BroadcastInjectedPayload {
 
 struct BroadcastNode {
     node_id: String,
+    node_ids: Vec<String>,
     msg_id: RefCell<usize>,
     messages: HashSet<usize>,
     neighbors: Vec<String>,
@@ -55,7 +58,7 @@ impl BroadcastNode {
         sender: mpsc::Sender<Event<BroadcastPayload, BroadcastInjectedPayload>>,
     ) {
         thread::spawn(move || loop {
-            thread::sleep(std::time::Duration::from_millis(200));
+            thread::sleep(std::time::Duration::from_millis(150));
             sender
                 .send(Event::Injected(BroadcastInjectedPayload::Gossip))
                 .unwrap();
@@ -96,12 +99,48 @@ impl BroadcastNode {
         }
     }
 
+    fn build_2d_topology(&self) -> HashMap<String, Vec<String>> {
+        let mut topology = HashMap::new();
+
+        let mut node_ids = self.node_ids.clone();
+        node_ids.sort();
+
+        let n = (node_ids.len() as f64).sqrt() as usize;
+
+        for (i, node_id) in node_ids.iter().enumerate() {
+            let mut neighbors = Vec::new();
+            if i > 0 {
+                neighbors.push(node_ids[i - 1].clone());
+            }
+            if i >= n {
+                neighbors.push(node_ids[i - n].clone());
+            }
+            if i < node_ids.len() - 1 {
+                neighbors.push(node_ids[i + 1].clone());
+            }
+            if i + n < node_ids.len() {
+                neighbors.push(node_ids[i + n].clone());
+            }
+            let random_neighbor = node_ids
+                .iter()
+                .filter(|id| !(neighbors.contains(*id) || *id == node_id))
+                .choose(&mut rand::thread_rng());
+            if let Some(random_neighbor) = random_neighbor {
+                neighbors.push(random_neighbor.clone());
+            }
+            topology.insert(node_id.clone(), neighbors);
+        }
+
+        topology
+    }
+
     fn handle_topology(
         &mut self,
-        topology: &mut HashMap<String, Vec<String>>,
+        _topology: &mut HashMap<String, Vec<String>>,
         sender: String,
         msg_id: Option<usize>,
     ) -> Message<BroadcastPayload> {
+        let mut topology = self.build_2d_topology();
         self.neighbors = topology
             .remove(&self.node_id)
             .unwrap_or_else(|| panic!("node {} not in topology", self.node_id));
@@ -220,6 +259,7 @@ impl Node<BroadcastPayload, BroadcastInjectedPayload> for BroadcastNode {
         BroadcastNode::spawn_gossip_thread(sender);
         BroadcastNode {
             node_id: init.node_id,
+            node_ids: init.node_ids,
             msg_id: RefCell::new(0),
             messages: HashSet::new(),
             neighbors: Vec::new(),
